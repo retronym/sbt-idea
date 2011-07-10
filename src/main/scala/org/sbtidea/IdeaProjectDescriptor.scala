@@ -8,10 +8,10 @@ package org.sbtidea
 
 import sbt._
 import xml.transform.{RewriteRule, RuleTransformer}
-import java.io.{FileOutputStream, File}
 import java.nio.channels.Channels
 import util.control.Exception._
-import xml.{Text, Elem, UnprefixedAttribute, XML, Node}
+import xml.{Text, Elem, XML, Node}
+import java.io.{FileOutputStream, File}
 
 object OutputUtil {
   def saveFile(dir: File, filename: String, node: xml.Node) { saveFile(new File(dir, filename), node) }
@@ -60,7 +60,7 @@ class IdeaProjectDescriptor(val projectInfo: IdeaProjectInfo, val env: IdeaProje
       </modules>
     </component>
 
-  private def project(inner: xml.Node*): xml.Node = <project version="4">{inner}</project>
+  private def project(inner: Seq[xml.Node]): xml.Node = <project version="4">{inner}</project>
 
   private def libraryTableComponent(library: IdeaLibrary): xml.Node =
     <component name="libraryTable">
@@ -88,7 +88,8 @@ class IdeaProjectDescriptor(val projectInfo: IdeaProjectInfo, val env: IdeaProje
     </component>
 
   private def projectRootManagerComponent: xml.Node =
-      <component name="ProjectRootManager" version="2" languageLevel={env.javaLanguageLevel} assert-keyword="true" jdk-15="true" project-jdk-name={env.projectJdkName} project-jdk-type="JavaSDK" />
+      <component name="ProjectRootManager" version="2" languageLevel={env.javaLanguageLevel}
+                 assert-keyword="true" jdk-15="true" project-jdk-name={env.projectJdkName} project-jdk-type="JavaSDK" />
 
   private def projectDetailsComponent: xml.Node =
     <component name="ProjectDetails">
@@ -109,14 +110,18 @@ class IdeaProjectDescriptor(val projectInfo: IdeaProjectInfo, val env: IdeaProje
       configDir.mkdirs
 
       Seq(
-        "modules.xml" -> Some(project(projectModuleManagerComponent)),
+        "modules.xml" -> Some(project(Seq(projectModuleManagerComponent))),
         "misc.xml" -> miscXml(configDir).map(miscTransformer.transform).map(_.head)
-      ) foreach { 
-        case (fileName, Some(xmlNode)) => saveFile(configDir, fileName, xmlNode) 
+      ) foreach {
+        case (fileName, Some(xmlNode)) => saveFile(configDir, fileName, xmlNode)
         case _ =>
       }
 
-      if (!configFile("vcs.xml").exists) saveFile(configDir, "vcs.xml", project(vcsComponent))
+
+      if (!configFile("vcs.xml").exists) {
+        val defaultVcsComponentNames = Seq("IssueNavigationConfiguration")
+        saveFile(configDir, "vcs.xml", project(defaultComponents(defaultVcsComponentNames) ++ vcsComponent))
+      }
 
       val librariesDir = configFile("libraries")
       librariesDir.mkdirs
@@ -130,7 +135,33 @@ class IdeaProjectDescriptor(val projectInfo: IdeaProjectInfo, val env: IdeaProje
     } else log.error("Skipping .idea creation for " + projectInfo.baseDir + " since directory does not exist")
   }
 
-  val defaultMiscXml = <project version="4"> {projectRootManagerComponent} </project>
+  private lazy val ideaAppConfig: Option[IdeaAppConfig] = {
+    try {
+      val ac = IdeaAppConfig.apply(log)
+      ac match {
+        case Some(x) => log.info("Using template project settings from: " + x.configDir.absolutePath)
+        case None => log.info("Could not locate IDEA config dir. Template Project Settings will not be used for .idea_project/{misc, vsc}.xml.")
+      }
+      ac
+    } catch {
+      case x =>
+        log.trace(x)
+        log.warn(x.getMessage)
+        None
+    }
+  }
+
+  private def defaultComponents(names: Seq[String]): Seq[Node] = ideaAppConfig match {
+    case Some(gc) => names.flatMap(gc.defaults)
+    case None => Seq()
+  }
+
+  private lazy val defaultMiscXml = {
+    val defaultMiscComponentNames = Seq("DependencyValidationManager", "DependenciesAnalyzeManager",
+      "JavadocGenerationManager", "ProjectResources", "MavenProjectsManager", "NullableNotNullManager",
+      "MavenCompilerTasksManager", "MavenProjectNavigator", "MavenRunner")
+    project(defaultComponents(defaultMiscComponentNames) ++ projectRootManagerComponent)
+  }
 
   private def miscXml(configDir: File): Option[Node] = try {
     Some(XML.loadFile(new File(configDir, "misc.xml")))
